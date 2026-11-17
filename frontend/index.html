@@ -6,7 +6,7 @@
 <title>日切放行</title>
 <script src="/static/vue.global.prod.js"></script>
 <style>
-  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--accent:#4cc9f0}
+  :root{--bg:#0b1220;--panel:#121a2b;--line:#243049;--text:#e8eefc;--muted:#93a0b8;--ok:#3ddc97;--bad:#ff6b6b;--warn:#f0c24c;--accent:#4cc9f0}
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   .top{display:flex;align-items:center;gap:18px;padding:14px 20px;border-bottom:1px solid var(--line);background:#0e1626}
   .brand{font-weight:700;letter-spacing:.08em;font-size:18px}
@@ -16,23 +16,35 @@
   .tabs button.on{color:var(--text);border-color:var(--line);background:#18233a}
   .user{color:var(--muted);font-size:13px}
   .ghost{background:#18233a;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:8px;cursor:pointer}
+  .ghost.tiny{padding:4px 8px;font-size:12px}
+  .policy{display:flex;align-items:center;gap:10px;padding:10px 20px;background:#0f1a2e;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap}
+  .policy b{font-size:15px}
+  .policy .err{margin-left:auto}
+  .muted{color:var(--muted)}
   main{padding:18px 20px 28px}
   .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
   h2{margin:0 0 10px;font-size:15px;color:#c9d4ea}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
   th{color:var(--muted);font-weight:600}
+  tbody tr.click{cursor:pointer}
+  tbody tr.click:hover{background:#16203a}
   input,select{width:100%;background:#0b1220;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;margin:4px 0 10px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .primary{background:var(--accent);color:#041018;border:0;padding:9px 12px;border-radius:8px;font-weight:700;cursor:pointer}
   .mono{font-family:Consolas,"Courier New",monospace}
   .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:#1b2a22;color:var(--ok)}
   .tag.bad{background:#2a1518;color:var(--bad)}
+  .tag.warn{background:#2a2415;color:var(--warn)}
   .login{max-width:400px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
   .err{color:var(--bad);min-height:18px;font-size:13px}
-  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-  .kpi .panel{padding:12px}.kpi b{display:block;font-size:22px;margin-top:4px}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+  .kpi .panel{padding:12px;margin-bottom:0}.kpi b{display:block;font-size:22px;margin-top:4px}
+  .sidebar{position:fixed;top:0;right:0;width:400px;max-width:92vw;height:100vh;overflow:auto;background:#0e1626;border-left:1px solid var(--line);padding:16px;z-index:20;box-shadow:-8px 0 24px rgba(0,0,0,.45)}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:4px 10px;font-size:13px;margin-bottom:12px}
+  .kv div{padding:4px 0;border-bottom:1px dashed var(--line)}
+  .empty{color:var(--muted);font-size:13px;padding:6px 0}
 </style>
 </head>
 <body>
@@ -55,12 +67,18 @@ createApp({
     const token=ref(localStorage.getItem('slicegate_token')||'');
     const user=ref(localStorage.getItem('slicegate_user')||'');
     const username=ref('admin'), password=ref('123456'), err=ref(''), tab=ref(0), actionErr=ref('');
-    const slices=ref([]), releases=ref([]), watermarks=ref([]);
+    const slices=ref([]), releases=ref([]), watermarks=ref([]), adjudications=ref([]), previews=ref([]);
+    const boundary=ref({today:null,items:[]});
+    const detail=ref(null);
     const form=ref({slice_no:'SL-2026-11-03-east',biz_date:'2026-11-03',partition_key:'east',row_count:1000,expected_count:1000});
     const releaseSliceId=ref(1), consumer=ref('ads_order');
     const nav=['切片登记','完整度裁决','下游放行','消费水位'];
+    const pending=computed(()=>slices.value.filter(s=>s.adj_status==='候审'));
     const completeCnt=computed(()=>slices.value.filter(s=>s.completeness==='完整').length);
     const openCnt=computed(()=>slices.value.filter(s=>s.release_status!=='已放行').length);
+    const releasedSlices=computed(()=>slices.value.filter(s=>s.release_status==='已放行'));
+    const alignedCnt=computed(()=>releasedSlices.value.filter(s=>releases.value.some(r=>r.slice_id===s.id&&r.status==='成功')).length);
+    const misalignedCnt=computed(()=>releasedSlices.value.length-alignedCnt.value);
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
@@ -70,7 +88,7 @@ createApp({
       localStorage.setItem('slicegate_token',j.token); localStorage.setItem('slicegate_user',j.username);
       await refresh();
     }
-    function logout(){token.value='';user.value='';localStorage.removeItem('slicegate_token');localStorage.removeItem('slicegate_user');}
+    function logout(){token.value='';user.value='';detail.value=null;localStorage.removeItem('slicegate_token');localStorage.removeItem('slicegate_user');}
     async function loadJson(url){
       const r=await fetch(url,{headers:auth()});
       const j=await r.json().catch(()=>({}));
@@ -85,13 +103,40 @@ createApp({
       releases.value=Array.isArray(rel.items)?rel.items:[];
       const w=await loadJson('/api/watermarks'); if(w===null) return;
       watermarks.value=Array.isArray(w.items)?w.items:[];
-      if(slices.value.length) releaseSliceId.value=slices.value[0].id;
+      const b=await loadJson('/api/boundary'); if(b===null) return;
+      boundary.value=b||{today:null,items:[]};
+      const a=await loadJson('/api/adjudications'); if(a===null) return;
+      adjudications.value=Array.isArray(a.items)?a.items:[];
+      const p=await loadJson('/api/previews'); if(p===null) return;
+      previews.value=Array.isArray(p.items)?p.items:[];
+      if(slices.value.length && !slices.value.some(x=>x.id===releaseSliceId.value)) releaseSliceId.value=slices.value[0].id;
+      if(detail.value) await openDetail(detail.value.item.id,true);
     }
-    async function createSlice(){actionErr.value='';const r=await fetch('/api/slices',{method:'POST',headers:auth(),body:JSON.stringify(form.value)});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'失败';await refresh();}
-    async function evaluate(id){await fetch('/api/slices/'+id+'/evaluate',{method:'POST',headers:auth()});await refresh();}
-    async function doRelease(){actionErr.value='';const r=await fetch('/api/slices/'+releaseSliceId.value+'/release',{method:'POST',headers:auth(),body:JSON.stringify({consumer:consumer.value})});const j=await r.json();if(!r.ok)actionErr.value=j.detail||'放行失败';await refresh();}
+    async function call(url,body){
+      actionErr.value='';
+      const r=await fetch(url,{method:'POST',headers:auth(),body:JSON.stringify(body||{})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){actionErr.value=j.detail||'操作失败';}
+      await refresh();
+      return r.ok;
+    }
+    async function createSlice(){await call('/api/slices',form.value);}
+    async function setBoundary(m){await call('/api/boundary',{mode:m});}
+    async function adjudicate(s){await call('/api/slices/'+s.id+'/evaluate',{base_version:s.adj_version});}
+    async function makePreview(s){await call('/api/slices/'+s.id+'/preview',{});}
+    async function confirmPreview(p){
+      const s=slices.value.find(x=>x.id===p.slice_id);
+      await call('/api/slices/'+p.slice_id+'/confirm',{preview_id:p.id,base_version:s?s.adj_version:null});
+    }
+    async function doRelease(){await call('/api/slices/'+releaseSliceId.value+'/release',{consumer:consumer.value});}
+    async function openDetail(id,quiet){
+      const j=await loadJson('/api/slices/'+id);
+      if(j&&j.item) detail.value=j;
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,tab,nav,slices,releases,watermarks,form,releaseSliceId,consumer,actionErr,completeCnt,openCnt,login,logout,createSlice,evaluate,doRelease};
+    return {token,user,username,password,err,tab,nav,slices,releases,watermarks,adjudications,previews,boundary,detail,
+      form,releaseSliceId,consumer,actionErr,pending,completeCnt,openCnt,releasedSlices,alignedCnt,misalignedCnt,
+      login,logout,createSlice,setBoundary,adjudicate,makePreview,confirmPreview,doRelease,openDetail};
   },
   template:`
   <div v-if="!token" class="login">
@@ -101,25 +146,44 @@ createApp({
   </div>
   <div v-if="token">
     <div class="top">
-      <div class="brand">日切放行<small>切片 → 完整度 → 放行 → 水位</small></div>
+      <div class="brand">日切放行<small>切片 → 完整度裁决 → 放行 → 水位（裁决与放行分入口）</small></div>
       <div class="tabs"><button v-for="(n,i) in nav" :key="n" :class="{on:tab===i}" @click="tab=i">{{n}}</button></div>
       <div class="user">{{user}}</div><button class="ghost" @click="logout">退出</button>
+    </div>
+    <div class="policy">
+      <span class="tag warn">策略条</span>
+      <span>裁决边界册 · 今日口径：</span>
+      <b v-if="boundary.today" :style="{color:'var(--ok)'}">{{boundary.today.mode}}路</b>
+      <b v-else style="color:var(--bad)">未设定</b>
+      <span v-if="boundary.today" class="muted">
+        {{boundary.today.set_by}} 定于 {{boundary.today.created_at}} · 当天不得更换 ·
+        {{boundary.today.mode==='甲'?'甲路：裁决直写完整度，放行态与水位不动':'乙路：先写预看快照，确认提交才落正式完整度'}}
+      </span>
+      <span v-else class="muted">两路不得混壬裁，选定后写入边界册当天不得更换：</span>
+      <span v-if="!boundary.today">
+        <button class="ghost tiny" @click="setBoundary('甲')">选定甲路</button>
+        <button class="ghost tiny" @click="setBoundary('乙')">选定乙路</button>
+      </span>
+      <span class="err">{{actionErr}}</span>
     </div>
     <main>
       <div class="kpi">
         <div class="panel">切片总数<b class="mono">{{slices.length}}</b></div>
+        <div class="panel">候审队列<b class="mono">{{pending.length}}</b></div>
         <div class="panel">已完整<b class="mono">{{completeCnt}}</b></div>
         <div class="panel">未放行<b class="mono">{{openCnt}}</b></div>
       </div>
+
       <div v-show="tab===0" class="grid">
         <div class="panel">
-          <h2>在途切片</h2>
-          <table><thead><tr><th>切片号</th><th>日/区</th><th>实收</th><th>完整度</th><th></th></tr></thead>
-          <tbody><tr v-for="s in slices" :key="s.id">
+          <h2>在途切片（点行看切片侧栏）</h2>
+          <table><thead><tr><th>切片号</th><th>日/区</th><th>实收</th><th>完整度</th><th>裁决态</th><th>放行态</th></tr></thead>
+          <tbody><tr v-for="s in slices" :key="s.id" class="click" @click="openDetail(s.id)">
             <td class="mono">{{s.slice_no}}</td><td>{{s.biz_date}} / {{s.partition_key}}</td>
             <td class="mono">{{s.row_count}}/{{s.expected_count}}</td>
             <td><span class="tag" :class="{bad:s.completeness!=='完整'}">{{s.completeness}}</span></td>
-            <td><button class="ghost" @click="evaluate(s.id)">重裁</button></td>
+            <td><span class="tag" :class="{warn:s.adj_status==='候审'}">{{s.adj_status}}</span></td>
+            <td>{{s.release_status}}</td>
           </tr></tbody></table>
         </div>
         <div class="panel">
@@ -128,37 +192,110 @@ createApp({
           <div class="row"><div><label>分区</label><input v-model="form.partition_key"/></div><div><label>实收</label><input type="number" v-model.number="form.row_count"/></div></div>
           <label>期望</label><input type="number" v-model.number="form.expected_count"/>
           <button class="primary" @click="createSlice">写入登记</button>
-          <div class="err">{{actionErr}}</div>
         </div>
       </div>
-      <div v-show="tab===1" class="panel">
-        <h2>完整度裁决</h2>
-        <table><thead><tr><th>切片</th><th>缺口</th><th>结论</th><th>放行态</th></tr></thead>
-        <tbody><tr v-for="s in slices" :key="'c'+s.id">
-          <td class="mono">{{s.slice_no}}</td><td class="mono">{{Math.max(s.expected_count-s.row_count,0)}}</td>
-          <td>{{s.completeness}}</td><td>{{s.release_status}}</td>
-        </tr></tbody></table>
+
+      <div v-show="tab===1">
+        <div class="panel">
+          <h2>候审队列</h2>
+          <div v-if="!boundary.today" class="err">请先在上方策略条选定今日裁决口径（甲/乙），未选定前裁决一律拦下并记“裁决口径偏了”。</div>
+          <div v-if="!pending.length" class="empty">候审队列为空</div>
+          <table v-if="pending.length"><thead><tr><th>切片号</th><th>日/区</th><th>实收/期望</th><th>缺口</th><th>版本</th><th>落笔</th></tr></thead>
+          <tbody><tr v-for="s in pending" :key="'p'+s.id" class="click" @click="openDetail(s.id)">
+            <td class="mono">{{s.slice_no}}</td><td>{{s.biz_date}} / {{s.partition_key}}</td>
+            <td class="mono">{{s.row_count}}/{{s.expected_count}}</td>
+            <td class="mono">{{Math.max(s.expected_count-s.row_count,0)}}</td>
+            <td class="mono">v{{s.adj_version}}</td>
+            <td>
+              <button v-if="boundary.today&&boundary.today.mode==='甲'" class="ghost tiny" @click.stop="adjudicate(s)">甲路裁决落笔</button>
+              <button v-if="boundary.today&&boundary.today.mode==='乙'" class="ghost tiny" @click.stop="makePreview(s)">乙路写预看快照</button>
+            </td>
+          </tr></tbody></table>
+        </div>
+        <div class="panel" v-if="boundary.today&&boundary.today.mode==='乙'">
+          <h2>预看快照（乙路 · 确认提交才落正式完整度）</h2>
+          <div v-if="!previews.length" class="empty">暂无快照</div>
+          <table v-if="previews.length"><thead><tr><th>#</th><th>切片</th><th>预看完整度</th><th>值班</th><th>时间</th><th>状态</th><th></th></tr></thead>
+          <tbody><tr v-for="p in previews" :key="'pv'+p.id">
+            <td class="mono">{{p.id}}</td><td class="mono">{{p.slice_no}}</td><td>{{p.completeness}}</td>
+            <td>{{p.created_by}}</td><td class="mono">{{p.created_at}}</td>
+            <td><span class="tag" :class="{warn:!p.confirmed}">{{p.confirmed?'已确认':'待确认'}}</span></td>
+            <td><button v-if="!p.confirmed" class="ghost tiny" @click="confirmPreview(p)">确认提交</button></td>
+          </tr></tbody></table>
+        </div>
+        <div class="panel">
+          <h2>裁决列表（裁决台账 · 与放行流水分账核对）</h2>
+          <div v-if="!adjudications.length" class="empty">暂无裁决记录</div>
+          <table v-if="adjudications.length"><thead><tr><th>时间</th><th>切片</th><th>值班</th><th>口径</th><th>动作</th><th>结论</th><th>状态</th><th>备注</th></tr></thead>
+          <tbody><tr v-for="a in adjudications" :key="'a'+a.id">
+            <td class="mono">{{a.created_at}}</td><td class="mono">{{a.slice_no}}</td><td>{{a.adjudicator}}</td>
+            <td>{{a.mode}}</td><td>{{a.action}}</td><td>{{a.result}}</td>
+            <td><span class="tag" :class="{bad:a.status!=='成功'}">{{a.status}}</span></td>
+            <td class="muted">{{a.note}}</td>
+          </tr></tbody></table>
+        </div>
       </div>
+
       <div v-show="tab===2" class="grid">
         <div class="panel">
-          <h2>申请放行</h2>
+          <h2>申请放行（与裁决分入口，只认已完整切片）</h2>
           <label>切片</label><select v-model.number="releaseSliceId"><option v-for="s in slices" :value="s.id">{{s.slice_no}}（{{s.completeness}}）</option></select>
           <label>下游</label><input v-model="consumer"/>
           <button class="primary" @click="doRelease">放行</button>
-          <div class="err">{{actionErr}}</div>
         </div>
         <div class="panel">
-          <h2>放行流水</h2>
+          <h2>放行台账（放行流水）</h2>
+          <div class="muted" style="margin-bottom:8px">对账：已放行 {{releasedSlices.length}} 笔 · 流水对齐 {{alignedCnt}} 笔
+            <span v-if="misalignedCnt" style="color:var(--bad)">· {{misalignedCnt}} 笔对不齐</span>
+            <span v-else style="color:var(--ok)">· 全部对齐</span>
+          </div>
           <table><thead><tr><th>切片</th><th>下游</th><th>结果</th><th>时间</th></tr></thead>
-          <tbody><tr v-for="r in releases" :key="r.id"><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td><td>{{r.status}}</td><td class="mono">{{r.created_at}}</td></tr></tbody></table>
+          <tbody><tr v-for="r in releases" :key="r.id"><td class="mono">{{r.slice_no}}</td><td>{{r.consumer}}</td>
+            <td><span class="tag" :class="{bad:r.status!=='成功'}">{{r.status}}</span></td><td class="mono">{{r.created_at}}</td></tr></tbody></table>
         </div>
       </div>
+
       <div v-show="tab===3" class="panel">
         <h2>消费水位</h2>
         <table><thead><tr><th>消费方</th><th>业务日</th><th>水位</th><th>来源切片</th></tr></thead>
         <tbody><tr v-for="w in watermarks" :key="w.id"><td>{{w.consumer}}</td><td>{{w.biz_date}}</td><td class="mono">{{w.watermark}}</td><td class="mono">{{w.source_slice}}</td></tr></tbody></table>
       </div>
     </main>
+
+    <div class="sidebar" v-if="detail">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">切片侧栏</h2><button class="ghost tiny" @click="detail=null">关闭</button>
+      </div>
+      <p class="mono" style="margin:10px 0">{{detail.item.slice_no}}</p>
+      <div class="kv">
+        <div class="muted">业务日</div><div>{{detail.item.biz_date}}</div>
+        <div class="muted">分区</div><div>{{detail.item.partition_key}}</div>
+        <div class="muted">实收/期望</div><div class="mono">{{detail.item.row_count}}/{{detail.item.expected_count}}</div>
+        <div class="muted">完整度</div><div>{{detail.item.completeness}}</div>
+        <div class="muted">裁决态</div><div>{{detail.item.adj_status}}（v{{detail.item.adj_version}}）</div>
+        <div class="muted">放行态</div><div>{{detail.item.release_status}}</div>
+      </div>
+      <h2>裁决历史</h2>
+      <div v-if="!detail.adjudications.length" class="empty">无</div>
+      <table v-if="detail.adjudications.length"><tbody>
+        <tr v-for="a in detail.adjudications" :key="'da'+a.id">
+          <td class="mono">{{a.created_at}}</td><td>{{a.adjudicator}}</td>
+          <td><span class="tag" :class="{bad:a.status!=='成功'}">{{a.status}}</span></td><td class="muted">{{a.note}}</td>
+        </tr></tbody></table>
+      <h2 style="margin-top:12px">预看快照</h2>
+      <div v-if="!detail.previews.length" class="empty">无</div>
+      <table v-if="detail.previews.length"><tbody>
+        <tr v-for="p in detail.previews" :key="'dp'+p.id">
+          <td class="mono">{{p.created_at}}</td><td>{{p.completeness}}</td><td>{{p.confirmed?'已确认':'待确认'}}</td>
+        </tr></tbody></table>
+      <h2 style="margin-top:12px">放行记录</h2>
+      <div v-if="!detail.releases.length" class="empty">无</div>
+      <table v-if="detail.releases.length"><tbody>
+        <tr v-for="r in detail.releases" :key="'dr'+r.id">
+          <td class="mono">{{r.created_at}}</td><td>{{r.consumer}}</td>
+          <td><span class="tag" :class="{bad:r.status!=='成功'}">{{r.status}}</span></td>
+        </tr></tbody></table>
+    </div>
   </div>`
 }).mount('#app');
 </script>
